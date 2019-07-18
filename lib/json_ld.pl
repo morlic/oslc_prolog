@@ -34,6 +34,8 @@ limitations under the License.
 :- rdf_meta find_type(r, r, -).
 :- rdf_meta prefixed_iri(r, -, -).
 :- rdf_meta predicate_object(r, -, r, -, -).
+:- rdf_meta s_p_o(r, -, r, -, -).
+:- rdf_meta json_s(r, -, -, -, -).
 
 % Parser registration
 :- multifile
@@ -130,12 +132,87 @@ json_serialize(R, Output, AddContext) :-
   ),
   Output = Id.put(Flat).
 
+json_s(R, Output, Context, NewContext, EmitContext) :-
+  findall(
+    Key-Value-Prefixes,
+    (
+      rdf(R, P, O),
+      s_p_o(P, Key, O, Value, Prefixes)
+    ),
+    PropsPrefixes
+  ),
+  pairs_keys_values(PropsPrefixes, Props, NestedPrefixes),
+  % this is supposed to be bad design
+  flatten(NestedPrefixes, Prefixes),
+  sort(1, @=<, Props, Sorted),
+  group_pairs_by_key(Sorted, Grouped),
+  flatten_singletons(Grouped, Flat),
+  append(Prefixes, Context, Combined),
+  list_to_set(Combined, NewContext),
+  ( EmitContext 
+  -> generate_context(Ctx, NewContext)
+  ; Ctx = json{}
+  ),
+  ( rdf_is_bnode(R) 
+  -> Id = Ctx
+  ; Id = Ctx.put(_{'@id':R})
+  ),
+  Output = Id.put(Flat).
+
+% Object is a literal
+s_p_o(P, Key, O, Value, [Prefix]) :-
+  prefixed_iri(P, Prefix, Key),
+  rdf_is_literal(O),
+  ( O = ^^(Value, _) 
+  ; O = @(Value, _)), !.
+
+% Predicate is rdf:type - add "@type": "prefix:Name"
+s_p_o(rdf:type, '@type', Type, Value, [Prefix]) :-
+  prefixed_iri(Type, Prefix, Value), !.
+  
+% Object is a b-node
+s_p_o(P, Key, O, Value, NewContext) :-
+  prefixed_iri(P, Prefix, Key),
+  rdf_is_bnode(O),
+  json_s(O, Value, [Prefix], NewContext, false), !.
+
+% Object is an IRI - add "prefix:Key": {"@id": "prefix2:Value"}
+s_p_o(P, Key, O, _{'@id': Id}, [PrefixP, PrefixO]) :-
+  prefixed_iri(P, PrefixP, Key),
+  prefixed_iri(O, PrefixO, Id), !.
+
+prefixed_iri(IRI, Prefix, PK) :-
+  rdf_iri(IRI),
+  rdf_global_id(Prefix:Local, IRI),
+  string_concat(Prefix, ":", P),
+  string_concat(P, Local, S),
+  atom_string(PK, S),
+  !.
+
+%%%%%%%%
+
+%prefixed_iri(rdf:type, 'rdf', '@type') :- !.
+
+
 predicate_object(P, Key, O, Value, Prefix, AddContext) :-
   prefixed_iri(P, Prefix, Key),
   json_serialize0(O, Value, AddContext).
 
-predicate_object(rdf:type, '@tyoe', O, Value, Prefix, _) :-
+predicate_object(rdf:type, '@type', O, Value, Prefix, _) :-
   prefixed_iri(O, Prefix, Value).
+
+collect_prefixes([], []).
+collect_prefixes([X|T], [X|T1]) :-
+  collect_prefixes(T, T1).
+collect_prefixes([[X]|T], [X|T1]) :-
+  collect_prefixes(T, T1).
+collect_prefixes([[X|[]]|T1], [X|T1]).
+collect_prefixes([[X|T1]|E], [X,[T2]|E]) :-
+  collect_prefixes(T1, T2).
+
+
+%%%%%%%%%%%%%\\
+
 
 % type_decl(T, Output, Prefix) :-
 %   rdf_iri(T),
@@ -147,22 +224,6 @@ predicate_object(rdf:type, '@tyoe', O, Value, Prefix, _) :-
 % type_decl(T, Output, AddContext) :-
 %   rdf_is_bnode(T),
 %   json_serialize0(T, Output, AddContext).
-
-prefixed_iri(IRI, 'rdf', PK) :-
-  PK = '@type',
-  rdf_iri(IRI),
-  rdf_global_id(rdf:type, IRI),
-  !.
-
-prefixed_iri(IRI, Prefix, PK) :-
-  rdf_iri(IRI),
-  rdf_global_id(Prefix:Local, IRI),
-  string_concat(Prefix, ":", P),
-  string_concat(P, Local, S),
-  atom_string(PK, S),
-  !.
-
-%%%%%%%%%%%%%
 
 % iri_key(P, K) :-
 %   rdf_iri(P),
